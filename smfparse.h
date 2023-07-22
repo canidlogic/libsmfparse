@@ -82,6 +82,13 @@
 #define SMFSOURCE_IOERR (-2)
 
 /*
+ * SMF error codes.
+ */
+#define SMF_ERR_IO          ( -1) /* I/O error */
+#define SMF_ERR_HUGE_FILE   ( -2) /* Input file exceeds 1 GiB */
+#define SMF_ERR_OPEN_FILE   ( -3) /* Failed to open input file */
+
+/*
  * SMF entity type constants.
  * 
  * The first entity in a MIDI file is always SMF_TYPE_HEADER.  This is
@@ -180,7 +187,7 @@ typedef struct SMFSOURCE_TAG SMFSOURCE;
  * 
  * Structure definition given in implementation file.
  */
-struct SMFPARSE_TAG
+struct SMFPARSE_TAG;
 typedef struct SMFPARSE_TAG SMFPARSE;
 
 /*
@@ -686,8 +693,10 @@ typedef struct {
 /*
  * Callback function pointer type for a fault handler.
  * 
- * This function must not return.  The recommended implementation is to
- * display an error message and then exit the program.
+ * This function should not return.  The recommended implementation is
+ * to display an error message and then exit the program.  If the
+ * function returns, the internal fault wrapper will automatically end
+ * the program anyways.
  * 
  * This function is NOT used for error conditions like I/O errors or
  * MIDI file syntax errors.  Rather, this is used for error conditions
@@ -925,12 +934,18 @@ SMFSOURCE *smfsource_custom(
  * If this is non-zero, then rewinding will be available.  You should
  * NOT specify can_seek if you are wrapping stdin!
  * 
- * If can_seek is specified, then this function will rewind the file.
- * The object will start out in a double-error state if this rewind
- * fails.
+ * If can_seek is specified, then this function will determine the total
+ * file length and then rewind the file.  This constructor can fail if
+ * the file exceeds the 1 GiB limit (see below) or if rewinding fails.
  * 
- * If can_seek is not specified, then the object always starts out
- * without any error state.
+ * This input source implementation has a limit of at most 1 GiB for the
+ * full file.  In the rare case that you need to read MIDI files that
+ * are larger than that, you should define a custom input source type
+ * that works with 64-bit file pointers.
+ * 
+ * If pErr is specified, it will be cleared to zero at the start of the
+ * function and then set to an error code that can be passed to
+ * smf_errorString() if the constructor fails.
  * 
  * Parameters:
  * 
@@ -941,11 +956,17 @@ SMFSOURCE *smfsource_custom(
  * 
  *   can_seek - non-zero if handle supports random access
  * 
+ *   pErr - pointer to variable to receive an error number, or NULL
+ * 
  * Return:
  * 
- *   the new input source object
+ *   the new input source object, or NULL if constructor failed
  */
-SMFSOURCE *smfsource_new_handle(FILE *pIn, int is_owner, int can_seek);
+SMFSOURCE *smfsource_new_handle(
+    FILE * pIn,
+    int    is_owner,
+    int    can_seek,
+    int  * pErr);
 
 /*
  * Construct an SMFSOURCE object by opening a file at a given path.
@@ -954,19 +975,21 @@ SMFSOURCE *smfsource_new_handle(FILE *pIn, int is_owner, int can_seek);
  * this wrapper will always specify both is_owner and can_seek.  This
  * means that rewinds are always supported when using this constructor.
  * 
- * This constructor can fail!  It returns NULL if it fails to open the
- * file at the given path.
+ * If pErr is specified, it will be cleared to zero at the start of the
+ * function and then set to an error code that can be passed to
+ * smf_errorString() if the constructor fails.
  * 
  * Parameters:
  * 
  *   pPath - the file path to open
  * 
+ *   pErr - pointer to variable to receive an error number, or NULL
+ * 
  * Return:
  * 
- *   the new input source object, or NULL if the file could not be
- *   opened
+ *   the new input source object, or NULL if constructor failed
  */
-SMFSOURCE *smfsource_new_path(const char *pPath);
+SMFSOURCE *smfsource_new_path(const char *pPath, int *pErr);
 
 /*
  * Release an SMFSOURCE object.
@@ -1019,11 +1042,11 @@ int smfsource_canRewind(SMFSOURCE *pSrc);
  * If called on an object that does not support rewinding, the function
  * fails but does not change the error state of the object.
  * 
- * If called on an object that supports rewinding and is in an error
- * state that is not a double-error state, this function will attempt a
- * rewind.  If successful, the error state is cleared in addition to
- * rewinding back to beginning of input.  If failure, the object is
- * changed to double-error state.
+ * If called on an object that supports rewinding and is not in a
+ * double-error state, this function will attempt a rewind.  If
+ * successful, the error state is cleared in addition to rewinding back
+ * to beginning of input.  If failure, the object is changed to
+ * double-error state.
  * 
  * If called on an object that is in double-error state, then this
  * function fails without making an actual attempt to rewind.
@@ -1149,5 +1172,26 @@ void smfparse_free(SMFPARSE *ps);
  *   pSrc - the input source to read from
  */
 void smfparse_read(SMFPARSE *ps, SMF_ENTITY *pEnt, SMFSOURCE *pSrc);
+
+/*
+ * Convert an error code returned by this parsing library into an error
+ * message string.
+ * 
+ * The string is nul-terminated and statically allocated.  It is in
+ * English, it will begin with a capital letter, and won't end with any
+ * punctuation or line break.
+ * 
+ * If the given code is not a recognized error code, "Unknown error" is
+ * returned.
+ * 
+ * Parameters:
+ * 
+ *   code - the error code
+ * 
+ * Return:
+ * 
+ *   an error message corresponding to the error code
+ */
+const char *smf_errorString(int code);
 
 #endif
