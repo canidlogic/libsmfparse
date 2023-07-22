@@ -1,2 +1,4 @@
 # libsmfparse
-Standard MIDI File (.MID) parsing library in C
+
+Standard MIDI File (.MID) parsing library in C.
+
