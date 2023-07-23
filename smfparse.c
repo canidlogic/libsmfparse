@@ -43,6 +43,14 @@
 #define HANDLE_FILE_MAXLEN INT32_C(1073741824)
 
 /*
+ * The initial and maximum capacities of the data buffer used for
+ * storing system exclusive message payloads, text data payloads, and
+ * custom meta-event data.
+ */
+#define BCAP_INIT INT32_C(256)
+#define BCAP_MAX  INT32_C(32768)
+
+/*
  * Type declarations
  * =================
  */
@@ -137,6 +145,68 @@ typedef struct {
 } HANDLE_SOURCE;
 
 /*
+ * SMFPARSE structure declaration.
+ * 
+ * Prototype given in header.
+ */
+struct SMFPARSE_TAG {
+  
+  /*
+   * Zero if just constructed, one if header has been read, two if in
+   * EOF state, less than zero if in error state.
+   * 
+   * If less than zero, it matches the error code that caused the error
+   * condition.
+   */
+  int status;
+  
+  /*
+   * The amount of bytes remaining to be read in the currently open
+   * chunk, or -1 if no chunk is currently open.
+   */
+  int32_t ckrem;
+  
+  /*
+   * The number of track chunks that have been encountered.
+   */
+  int32_t trkcount;
+  
+  /*
+   * The header information, if status is greater than zero.
+   * 
+   * When returning to client, a separate header structure is used to
+   * prevent client modifications (rHead).
+   */
+  SMF_HEADER head;
+  
+  /*
+   * Structures used for returning values with the entity.
+   */
+  SMF_HEADER   rHead;
+  SMF_TIMECODE rTC;
+  SMF_TIMESIG  rTS;
+  SMF_KEYSIG   rKS
+  
+  /*
+   * Data buffer state.
+   * 
+   * blen is the actual number of bytes currently in the buffer.  It
+   * must be in range zero to bcap, inclusive.
+   * 
+   * bcap is the total size of the buffer in bytes.  The initial
+   * capacity is BCAP_INIT and the maximum capacity is BCAP_MAX.
+   * Capacity grows by doubling, maxing out at BCAP_MAX.
+   * 
+   * bptr is a pointer to the dynamically-allocated buffer block.  If
+   * bcap is zero, this will be NULL.  Otherwise, it will be non-NULL
+   * with a size matching bcap bytes.
+   */
+  int32_t   blen;
+  int32_t   bcap;
+  uint8_t * bptr;
+};
+
+/*
  * Static data
  * ===========
  */
@@ -153,6 +223,16 @@ static smf_fp_fault m_fault = NULL;
 
 /* Prototypes */
 static void fault(long lnum);
+
+static int32_t readUint16BE(SMFSOURCE *pSrc, int *pErr);
+static int readUint32BE(uint32_t *pv, SMFSOURCE *pSrc, int *pErr);
+
+static int readChunkHead(
+    uint32_t  * pType,
+    int32_t   * pLen,
+    SMFSOURCE * pSrc,
+    int       * pErr);
+static int readHeaderChunk(SMF_HEADER *ph, SMFSOURCE *pSrc, int *pErr);
 
 static int handle_source_read(void *pInstance);
 static int handle_source_rewind(void *pInstance);
@@ -175,6 +255,330 @@ static void fault(long lnum) {
     fprintf(stderr, "Fault within libsmfparse at line %ld\n", lnum);
   }
   exit(EXIT_FAILURE);
+}
+
+/*
+ * Read an unsigned 16-bit integer in big endian order from the input
+ * source.
+ * 
+ * Parameters:
+ * 
+ *   pSrc - the input source to read from
+ * 
+ *   pErr - receives an error code if failure
+ * 
+ * Return:
+ * 
+ *   the unsigned 16-bit value, or -1 if failure
+ */
+static int32_t readUint16BE(SMFSOURCE *pSrc, int *pErr) {
+  
+  int c = 0;
+  int i = 0;
+  int32_t result = 0;
+  
+  /* Check parameters */
+  if ((pSrc == NULL) || (pErr == NULL)) {
+    fault(__LINE__);
+  }
+  
+  /* Read the two bytes and add to result */
+  for(i = 0; i < 2; i++) {
+    c = smfsource_read(pSrc);
+    
+    if (c == SMFSOURCE_IOERR) {
+      *pErr = SMF_ERR_IO;
+      result = -1;
+      break;
+      
+    } else if (c == SMFSOURCE_EOF) {
+      *pErr = SMF_ERR_EOF;
+      result = -1;
+      break;
+    }
+    
+    result <<= 8;
+    result |= ((int32_t) c);
+  }
+  
+  /* Return result or -1 */
+  return result;
+}
+
+/*
+ * Read an unsigned 32-bit integer in big-endian order from the input
+ * source.
+ * 
+ * Parameters:
+ * 
+ *   pv - the variable to receive the result
+ * 
+ *   pSrc - the input source to read from
+ * 
+ *   pErr - receives an error code if failure
+ * 
+ * Return:
+ * 
+ *   non-zero if successful, zero if error
+ */
+static int readUint32BE(uint32_t *pv, SMFSOURCE *pSrc, int *pErr) {
+  
+  int status = 1;
+  int c = 0;
+  int i = 0;
+  
+  /* Check parameters */
+  if ((pi == NULL) || (pSrc == NULL) || (pErr == NULL)) {
+    fault(__LINE__);
+  }
+  
+  /* Clear result */
+  *pv = 0;
+  
+  /* Read the four bytes and add to result */
+  for(i = 0; i < 4; i++) {
+    c = smfsource_read(pSrc);
+    
+    if (c == SMFSOURCE_IOERR) {
+      *pErr = SMF_ERR_IO;
+      status = 0;
+      break;
+      
+    } else if (c == SMFSOURCE_EOF) {
+      *pErr = SMF_ERR_EOF;
+      status = 0;
+      break;
+    }
+    
+    *pv <<= 8;
+    *pv |= ((uint32_t) c);
+  }
+  
+  /* Return status */
+  return status;
+}
+
+/*
+ * Read the header of a chunk within a MIDI file.
+ * 
+ * pType and pLen point to the variables to receive the type of chunk
+ * and the length of the chunk in bytes.  The length of the chunk does
+ * not include the chunk header.
+ * 
+ * pSrc is the input source to read the header from.  Reading starts
+ * sequentially at current position.  Upon successful return, the input
+ * source will be positioned to read the first byte of data within the
+ * chunk.
+ * 
+ * pErr points to a variable to receive an error code if the function
+ * fails.
+ * 
+ * Parameters:
+ * 
+ *   pType - pointer to the output chunk type variable
+ * 
+ *   pLen - pointer to the output chunk length variable
+ * 
+ *   pSrc - the input source
+ * 
+ *   pErr - pointer to the error code variable
+ * 
+ * Return:
+ * 
+ *   non-zero if successful, zero if error
+ */
+static int readChunkHead(
+    uint32_t  * pType,
+    int32_t   * pLen,
+    SMFSOURCE * pSrc,
+    int       * pErr) {
+  
+  int status = 1;
+  uint32_t lv = 0;
+  
+  /* Check parameters */
+  if ((pType == NULL) || (pLen == NULL) ||
+      (pSrc == NULL) || (pErr == NULL)) {
+    fault(__LINE__);
+  }
+  
+  /* Read the type */
+  if (!readUint32BE(pType, pSrc, pErr)) {
+    status = 0;
+  }
+  
+  /* Read the length as unsigned */
+  if (status) {
+    if (!readUint32BE(&lv, pSrc, pErr)) {
+      status = 0;
+    }
+  }
+  
+  /* Make sure length in signed range */
+  if (status) {
+    if (lv > INT32_MAX) {
+      status = 0;
+      *pErr = SMF_ERR_HUGE_CHUNK;
+    }
+  }
+  
+  /* Write the signed length and return status */
+  if (status) {
+    *pLen = (int32_t) lv;
+  }
+  
+  return status;
+}
+
+/*
+ * Read the MIDI header chunk.
+ * 
+ * Parameters:
+ * 
+ *   ph - the structure to store the parsed results
+ * 
+ *   pSrc - the source to read from
+ * 
+ *   pErr - stores the error code on failure
+ * 
+ * Return:
+ * 
+ *   non-zero if successful, zero if error
+ */
+static int readHeaderChunk(SMF_HEADER *ph, SMFSOURCE *pSrc, int *pErr) {
+  
+  int status = 1;
+  
+  uint32_t ck_type = 0;
+  int32_t ck_len = 0;
+  
+  int32_t fmt = 0;
+  int32_t ntrks = 0;
+  int32_t division = 0;
+  
+  int32_t subdiv = 0;
+  int frame_rate = 0;
+  
+  /* Check parameters */
+  if ((ph == NULL) || (pSrc == NULL) || (pErr == NULL)) {
+    fault(__LINE__);
+  }
+  
+  /* Read the header chunk header */
+  if (!readChunkHead(&ck_type, &ck_len, pSrc, pErr)) {
+    status = 0;
+  }
+  
+  /* Make sure header chunk is correct type */
+  if (status) {
+    if (ck_type != UINT32_C(0x4d546864)) {
+      status = 0;
+      *pErr = SMF_ERR_SIGNATURE;
+    }
+  }
+  
+  /* Make sure header chunk is at least six bytes */
+  if (status) {
+    if (ck_len < 6) {
+      status = 0;
+      *pErr = SMF_ERR_HEADER;
+    }
+  }
+  
+  /* Read the three header fields */
+  if (status) {
+    fmt = readUint16BE(pSrc, pErr);
+    if (fmt < 0) {
+      status = 0;
+    }
+  }
+  
+  if (status) {
+    ntrks = readUint16BE(pSrc, pErr);
+    if (ntrks < 0) {
+      status = 0;
+    }
+  }
+  
+  if (status) {
+    division = readUint16BE(pSrc, pErr);
+    if (division < 0) {
+      status = 0;
+    }
+  }
+  
+  /* Skip any remaining bytes in the header */
+  if (status) {
+    if (!smfsource_skip(pSrc, ck_len - 6)) {
+      status = 0;
+      *pErr = SMF_ERR_IO;
+    }
+  }
+  
+  /* Check fmt range */
+  if (status) {
+    if (fmt > 2) {
+      status = 0;
+      *pErr = SMF_ERR_MIDI_FMT;
+    }
+  }
+  
+  /* Check at least one track */
+  if (status) {
+    if (ntrks < 1) {
+      status = 0;
+      *pErr = SMF_ERR_NO_TRACKS;
+    }
+  }
+  
+  /* Check that if format 0, there is at most one track */
+  if (status) {
+    if ((fmt == 0) && (ntrks > 1)) {
+      status = 0;
+      *pErr = SMF_ERR_MULTI_TRACK;
+    }
+  }
+  
+  /* Decypher the division field */
+  if (status) {
+    if ((division & INT32_C(0x8000)) == 0) {
+      /* High bit clear, so the division gives the number of delta units
+       * per beat ("MIDI quarter note") */
+      if (division > 0) {
+        subdiv = division;
+        frame_rate = 0;
+        
+      } else {
+        status = 0;
+        *pErr = SMF_ERR_HEADER;
+      }
+      
+    } else {
+      /* High bit set, so this is an SMPTE time; parse the subfields */
+      frame_rate = (int) (division >> 8);
+      frame_rate = (frame_rate ^ 0xff) + 1;
+      subdiv = division & 0xff;
+      
+      /* Check frame rate and subdivision in range */
+      if (((frame_rate != 24) && (frame_rate != 25) &&
+            (frame_rate != 29) && (frame_rate != 30)) ||
+          (subdiv < 1)) {
+        status = 0;
+        *pErr = SMF_ERR_HEADER;
+      }
+    }
+  }
+  
+  /* Fill in the header structure */
+  if (status) {
+    ph->fmt = (int) fmt;
+    ph->nTracks = ntrks;
+    (ph->ts).subdiv = subdiv;
+    (ph->ts).frame_rate = frame_rate;
+  }
+  
+  /* Return status */
+  return status;
 }
 
 /*
@@ -746,6 +1150,132 @@ int smfsource_read(SMFSOURCE *pSrc) {
 }
 
 /*
+ * smfparse_alloc function.
+ */
+SMFPARSE *smfparse_alloc(void) {
+  SMFPARSE *ps = NULL;
+  
+  ps = (SMFPARSE *) calloc(1, sizeof(SMFPARSE));
+  if (ps == NULL) {
+    fault(__LINE__);
+  }
+  
+  ps->status   = 0;
+  ps->ckrem    = -1;
+  ps->trkcount = 0;
+  ps->blen     = 0;
+  ps->bcap     = 0;
+  ps->bptr     = NULL;
+  
+  return ps;
+}
+
+/*
+ * smfparse_free function.
+ */
+void smfparse_free(SMFPARSE *ps) {
+  
+  if (ps != NULL) {
+    if (ps->bptr != NULL) {
+      free(ps->bptr);
+      ps->bptr = NULL;
+    }
+    free(ps);
+    ps = NULL;
+  }
+}
+
+/*
+ * smfparse_read function.
+ */
+void smfparse_read(SMFPARSE *ps, SMF_ENTITY *pEnt, SMFSOURCE *pSrc) {
+  
+  int status = 1;
+  int err_code = 0;
+  
+  /* Check parameters */
+  if ((ps == NULL) || (pEnt == NULL) || (pSrc == NULL)) {
+    fault(__LINE__);
+  }
+  
+  /* Reset entity structure */
+  memset(pEnt, 0, sizeof(SMF_ENTITY));
+  
+  pEnt->status     = 0;
+  pEnt->pHead      = NULL;
+  pEnt->chunk_type = 0;
+  pEnt->delta      = -1;
+  pEnt->ch         = -1;
+  pEnt->key        = -1;
+  pEnt->ctl        = -1;
+  pEnt->val        = -1;
+  pEnt->bend       = 0;
+  pEnt->buf_len    = 0;
+  pEnt->buf_ptr    = NULL;
+  pEnt->seq_num    = -1;
+  pEnt->txtype     = -1;
+  pEnt->beat_dur   = -1;
+  pEnt->tcode      = NULL;
+  pEnt->tsig       = NULL;
+  pEnt->ksig       = NULL;
+  
+  /* Determine what to do */
+  if (ps->status < 0) {
+    /* We are in an error state, so just use that */
+    status = 0;
+    err_code = ps->status;
+    
+  } else if (ps->status == 0) {
+    /* We are in initial state, so read the header chunk */
+    if (!readHeaderChunk(&(ps->head), pSrc, &err_code)) {
+      status = 0;
+    }
+    
+    /* Change to header-read state */
+    if (status) {
+      ps->status = 1;
+    }
+    
+    /* Copy parsed header into header return structure */
+    if (status) {
+      memcpy(&(ps->rHead), &(ps->head), sizeof(SMF_HEADER));
+    }
+    
+    /* Set up header entity */
+    if (status) {
+      pEnt->status = SMF_TYPE_HEADER;
+      pEnt->pHead  = &(ps->rHead);
+    }
+    
+  } else if (ps->status == 2) {
+    
+    /* @@TODO: */
+    
+  } else if ((ps->status == 1) && (ps->ckrem < 0)) {
+    
+    /* @@TODO: */
+    
+  } else if ((ps->status == 1) && (ps->ckrem >= 0)) {
+    
+    /* @@TODO: */
+    
+  } else {
+    fault(__LINE__);
+  }
+  
+  /* If status indicates failure, copy error code into entity, make sure
+   * that entity status is negative, and copy into parser status */
+  if (!status) {
+    if (err_code >= 0) {
+      fault(__LINE__);
+    }
+    
+    pEnt->status = err_code;
+    ps->status   = err_code;
+  }
+}
+
+/*
  * smf_errorString function.
  */
 const char *smf_errorString(int code) {
@@ -762,6 +1292,34 @@ const char *smf_errorString(int code) {
     
     case SMF_ERR_OPEN_FILE:
       pResult = "Failed to open MIDI file";
+      break;
+    
+    case SMF_ERR_EOF:
+      pResult = "Unexpected end of MIDI file";
+      break;
+    
+    case SMF_ERR_HUGE_CHUNK:
+      pResult = "MIDI file chunk is too large";
+      break;
+    
+    case SMF_ERR_SIGNATURE:
+      pResult = "MIDI file lacks correct file header signature";
+      break;
+    
+    case SMF_ERR_HEADER:
+      pResult = "MIDI file has invalid header chunk";
+      break;
+    
+    case SMF_ERR_MIDI_FMT:
+      pResult = "MIDI file has unrecognized format type";
+      break;
+    
+    case SMF_ERR_NO_TRACKS:
+      pResult = "MIDI file has no declared tracks";
+      break;
+    
+    case SMF_ERR_MULTI_TRACK:
+      pResult = "MIDI format 0 file can't have multiple tracks";
       break;
     
     default:

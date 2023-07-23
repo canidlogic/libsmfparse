@@ -87,6 +87,13 @@
 #define SMF_ERR_IO          ( -1) /* I/O error */
 #define SMF_ERR_HUGE_FILE   ( -2) /* Input file exceeds 1 GiB */
 #define SMF_ERR_OPEN_FILE   ( -3) /* Failed to open input file */
+#define SMF_ERR_EOF         ( -4) /* Unexpected end of file */
+#define SMF_ERR_HUGE_CHUNK  ( -5) /* Chunk size out of range */
+#define SMF_ERR_SIGNATURE   ( -6) /* Not a standard MIDI file */
+#define SMF_ERR_HEADER      ( -7) /* Invalid MIDI file header */
+#define SMF_ERR_MIDI_FMT    ( -8) /* Invalid MIDI format declaration */
+#define SMF_ERR_NO_TRACKS   ( -9) /* MIDI file has no tracks */
+#define SMF_ERR_MULTI_TRACK (-10) /* Format 0 file is multitrack */
 
 /*
  * SMF entity type constants.
@@ -211,7 +218,7 @@ typedef struct {
    * timing system.  Delta time units are constant for SMPTE timing.
    * 
    * Range is 1 to 32767 (inclusive) if frame_rate is set to zero, or
-   * else 1 to 127 (inclusive) for SMPTE timing when frame_rate is
+   * else 1 to 255 (inclusive) for SMPTE timing when frame_rate is
    * non-zero.
    */
   int32_t subdiv;
@@ -220,7 +227,7 @@ typedef struct {
    * The frame rate for SMPTE timing.
    * 
    * The valid values are 24, 25, 29(*), or 30 frames per second.  Or,
-   * if not  using SMPTE timing, this field is set to zero.
+   * if not using SMPTE timing, this field is set to zero.
    * 
    * (*) - The value of 29 does NOT mean 29 frames per second.  Instead,
    * it selects a rate that is exactly equal to:
@@ -267,8 +274,13 @@ typedef struct {
   /*
    * The declared number of tracks in the file.
    * 
-   * This does not necessarily match the actual number of tracks in the
-   * file.  The value must be 1 if the format is 0.
+   * This value must be 1 if the format is 0.  Otherwise, the value must
+   * be one or more.
+   * 
+   * The parser will only read the declared number of tracks in the
+   * file, skipping any past the declared number.  There must be at
+   * least the declared number of tracks in the file or there will be an
+   * unexpected end of file error.
    */
   int32_t nTracks;
   
