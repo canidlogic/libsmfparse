@@ -94,6 +94,20 @@
 #define SMF_ERR_MIDI_FMT    ( -8) /* Invalid MIDI format declaration */
 #define SMF_ERR_NO_TRACKS   ( -9) /* MIDI file has no tracks */
 #define SMF_ERR_MULTI_TRACK (-10) /* Format 0 file is multitrack */
+#define SMF_ERR_MULTI_HEAD  (-11) /* Multiple header chunks */
+#define SMF_ERR_OPEN_TRACK  (-12) /* Track ends without End Of Track */
+#define SMF_ERR_LONG_VARINT (-13) /* Variable-length is too long */
+#define SMF_ERR_RUN_STATUS  (-14) /* Missing running status byte */
+#define SMF_ERR_BIG_PAYLOAD (-15) /* Message payload too large */
+#define SMF_ERR_BAD_EVENT   (-16) /* Invalid event in chunk */
+#define SMF_ERR_SEQ_NUM     (-17) /* Invalid Sequence Number event */
+#define SMF_ERR_CH_PREFIX   (-18) /* Invalid Channel Prefix event */
+#define SMF_ERR_BAD_EOT     (-19) /* Invalid End Of Track event */
+#define SMF_ERR_SET_TEMPO   (-20) /* Invalid Set Tempo event */
+#define SMF_ERR_SMPTE_OFF   (-21) /* Invalid SMPTE Offset event */
+#define SMF_ERR_TIME_SIG    (-22) /* Invalid Time Signature event */
+#define SMF_ERR_KEY_SIG     (-23) /* Invalid Key Signature event */
+#define SMF_ERR_MIDI_DATA   (-24) /* Invalid MIDI data bytes */
 
 /*
  * SMF entity type constants.
@@ -130,7 +144,7 @@
 #define SMF_TYPE_SMPTE          (18)  /* SMPTE Offset meta-event */
 #define SMF_TYPE_TIME_SIG       (19)  /* Time Signature meta-event */
 #define SMF_TYPE_KEY_SIG        (20)  /* Key Signature meta-event */
-#define SMF_TYPE_META           (21)  /* Special FF-7F meta-event */
+#define SMF_TYPE_META           (21)  /* Other kind of meta-event */
 
 /*
  * SMF text entity subclass constants.
@@ -394,8 +408,15 @@ typedef struct {
    * 
    * The key of +2 is D major or B minor (two sharps)
    * 
+   * And so forth.  The valid range is SMF_MIN_KEYSIG to SMF_MAX_KEYSIG,
+   * inclusive.
    */
   int key;
+  
+  /*
+   * Non-zero if this is a minor key, zero if this is a major key.
+   */
+  int is_minor;
   
 } SMF_KEYSIG;
 
@@ -694,6 +715,19 @@ typedef struct {
    * parser object is freed (whichever occurs first).
    */
   SMF_KEYSIG *ksig;
+  
+  /*
+   * The type byte value for other types of meta-events, including
+   * Sequencer-Specific Meta-Event (type 7F) and all meta-events not in
+   * the Standard MIDI Files 1.0 specification.
+   * 
+   * This is used with SMF_TYPE_META entities, where its valid range is
+   * 0 to SMF_MAX_BYTE, inclusive, excluding those events that are
+   * recognized and not the Sequencer-Specific Meta-Event.
+   * 
+   * Other entities set this to -1 and ignore it.
+   */
+  int meta_type;
   
 } SMF_ENTITY;
 
