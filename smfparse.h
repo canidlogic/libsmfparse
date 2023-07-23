@@ -471,7 +471,7 @@ typedef struct {
    * The delta time offset before this entity.
    * 
    * This is used for every entity except SMF_TYPE_HEADER,
-   * SMF_TYPE_CHUNK, and SMF_TYPE_BEGIN_TRACK.  Note that
+   * SMF_TYPE_CHUNK, SMF_TYPE_BEGIN_TRACK, and SMF_TYPE_EOF.  Note that
    * SMF_TYPE_END_TRACK *does* have a delta time offset, because the
    * End Of Track is an actual meta-event within the track chunk.
    * 

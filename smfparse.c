@@ -425,7 +425,7 @@ static int readUint32BE(uint32_t *pv, SMFSOURCE *pSrc, int *pErr) {
   int i = 0;
   
   /* Check parameters */
-  if ((pi == NULL) || (pSrc == NULL) || (pErr == NULL)) {
+  if ((pv == NULL) || (pSrc == NULL) || (pErr == NULL)) {
     fault(__LINE__);
   }
   
@@ -646,7 +646,7 @@ static int readChunkHead(
   if (status) {
     *pLen = (int32_t) lv;
   }
-  
+
   return status;
 }
 
@@ -918,7 +918,7 @@ static int parseEvent(
     if (a == 0x00) {
       /* Sequence Number, so there should be exactly two buffered data
        * bytes */
-      if (ps->buf_len != 2) {
+      if (ps->blen != 2) {
         status = 0;
         *pErr = SMF_ERR_SEQ_NUM;
       }
@@ -953,7 +953,7 @@ static int parseEvent(
     } else if (a == 0x20) {
       /* MIDI channel prefix, so there should be exactly one buffered
        * data byte */
-      if (ps->buf_len != 1) {
+      if (ps->blen != 1) {
         status = 0;
         *pErr = SMF_ERR_CH_PREFIX;
       }
@@ -980,7 +980,7 @@ static int parseEvent(
       
     } else if (a == 0x2f) {
       /* End Of Track, so there should be no buffered data bytes */
-      if (ps->buf_len != 0) {
+      if (ps->blen != 0) {
         status = 0;
         *pErr = SMF_ERR_BAD_EOT;
       }
@@ -1002,7 +1002,7 @@ static int parseEvent(
       
     } else if (a == 0x51) {
       /* Set Tempo, so there should be exactly 3 data bytes */
-      if (ps->buf_len != 3) {
+      if (ps->blen != 3) {
         status = 0;
         *pErr = SMF_ERR_SET_TEMPO;
       }
@@ -1028,7 +1028,7 @@ static int parseEvent(
       
     } else if (a == 0x54) {
       /* SMPTE Offset, so there should be exactly 5 data bytes */
-      if (ps->buf_len != 5) {
+      if (ps->blen != 5) {
         status = 0;
         *pErr = SMF_ERR_SMPTE_OFF;
       }
@@ -1091,7 +1091,7 @@ static int parseEvent(
       
     } else if (a == 0x58) {
       /* Time Signature, so there should be exactly 4 data bytes */
-      if (ps->buf_len != 4) {
+      if (ps->blen != 4) {
         status = 0;
         *pErr = SMF_ERR_TIME_SIG;
       }
@@ -1145,7 +1145,7 @@ static int parseEvent(
       
     } else if (a == 0x59) {
       /* Key signature, so there should be exactly 2 data bytes */
-      if (ps->buf_len != 2) {
+      if (ps->blen != 2) {
         status = 0;
         *pErr = SMF_ERR_KEY_SIG;
       }
@@ -1473,7 +1473,7 @@ static int readEvent(
   
   /* For the End Of Track meta-event (type 2F), skip any remaining data
    * in the track */
-  if (status && (a == 0x2f)) {
+  if (status && (c == 0xff) && (a == 0x2f)) {
     if (!smfsource_skip(pSrc, ps->ckrem)) {
       status = 0;
       *pErr = SMF_ERR_IO;
